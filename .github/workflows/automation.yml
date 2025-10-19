@@ -1,8 +1,29 @@
-      - name: Run Zotero → Readwise Sync (use Citation Key as title)
+name: Zotero to Readwise Automation
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 11 * * *"  # 04:00 Vancouver (11:00 UTC) daily
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install zotero2readwise
+        run: |
+          python -m pip install --upgrade pip
+          pip install zotero2readwise
+
+      - name: Sync Zotero → Readwise (use Citation Key as title)
         env:
           READWISE_TOKEN: ${{ secrets.READWISE_TOKEN }}
-          ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
-          ZOTERO_ID: ${{ secrets.ZOTERO_ID }}
+          ZOTERO_KEY:     ${{ secrets.ZOTERO_KEY }}
+          ZOTERO_ID:      ${{ secrets.ZOTERO_ID }}
         run: |
           python - <<'PY'
           import os
@@ -18,22 +39,27 @@
           )
 
           try:
+              # Get all items (annotations + notes)
               items = z.get_all_zotero_items()
+
+              # Replace title with Better BibTeX "Citation Key" when present in Extra
               changed = 0
               for it in items:
-                  data = it.get("data", {})
-                  extra = (data.get("extra") or "")
+                  d = it.get("data", {})
+                  extra = (d.get("extra") or "")
                   if "Citation Key:" in extra:
                       key = extra.split("Citation Key:", 1)[1].strip().splitlines()[0].strip()
                       if key:
-                          data["title"] = key
+                          d["title"] = key
                           changed += 1
 
+              # Use library internals to format & upload
               formatted = z.formatter.format_items(items)
               z.readwise.post_zotero_annotations_to_readwise(formatted)
               print(f"✅ Done. Titles replaced with Citation Key on {changed} items.")
           except Exception as e:
               print(f"⚠️ Fallback to default run due to: {e}")
+              print("Syncing…")
               z.run()
               print("✅ Done (default titles).")
           PY
