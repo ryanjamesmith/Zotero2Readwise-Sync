@@ -18,7 +18,6 @@
           )
 
           try:
-              # Pull Zotero items and replace titles with Better BibTeX Citation Key when available
               items = z.get_all_zotero_items()
               changed = 0
               for it in items:
