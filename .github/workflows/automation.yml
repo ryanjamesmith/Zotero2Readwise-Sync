@@ -1,7 +1,7 @@
 name: Zotero to Readwise Automation
 
 on:
-  workflow_dispatch:          # allow manual runs
+  workflow_dispatch:          # for manual runs
   schedule:
     - cron: "0 11 * * *"      # 04:00 Vancouver (11:00 UTC) daily
 
@@ -20,36 +20,36 @@ jobs:
       - name: Install zotero2readwise
         run: pip install --upgrade zotero2readwise
 
-      - name: Run Zotero → Readwise sync (forced ASCII headers)
+      - name: Validate secrets (ASCII-only)
+        env:
+          ZOTERO_KEY:     ${{ secrets.ZOTERO_KEY }}
+          READWISE_TOKEN: ${{ secrets.READWISE_TOKEN }}
+          ZOTERO_ID:      ${{ secrets.ZOTERO_ID }}
+        run: |
+          python - <<'PY'
+          import os, sys
+          def check(name):
+              v = os.environ.get(name, "")
+              bad = [(i, hex(ord(c))) for i,c in enumerate(v) if ord(c) > 127]
+              if not v:
+                  sys.exit(f"{name} is missing.")
+              if bad:
+                  sys.exit(f"{name} contains non-ASCII chars at {bad}")
+          check("ZOTERO_KEY")
+          check("READWISE_TOKEN")
+          check("ZOTERO_ID")
+          print("Secrets look ASCII-only.")
+          PY
+
+      - name: Sync Zotero → Readwise
         env:
           READWISE_TOKEN: ${{ secrets.READWISE_TOKEN }}
-          ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
-          ZOTERO_ID: ${{ secrets.ZOTERO_ID }}
+          ZOTERO_KEY:     ${{ secrets.ZOTERO_KEY }}
+          ZOTERO_ID:      ${{ secrets.ZOTERO_ID }}
         run: |
           python - <<'PY'
           import os
-          import httpx
           from zotero2readwise.zt2rw import Zotero2Readwise
-          from zotero2readwise import zotero as _zrw_mod
-
-          # --- Force an explicit ASCII-safe Zotero client ---
-          def _safe_client(library_id, library_type, api_key):
-              headers = {
-                  "User-Agent": "z2rw-gh-actions",
-                  "Zotero-API-Version": "3",
-                  "Zotero-API-Key": api_key.encode("ascii", "ignore").decode("ascii"),
-              }
-              client = httpx.Client(
-                  base_url=f"https://api.zotero.org/{library_type}s/{library_id}",
-                  headers=headers
-              )
-              from pyzotero.zotero import Zotero
-              z = Zotero(library_id, library_type, api_key)
-              z.client = client
-              return z
-
-          _zrw_mod.get_zotero_client = _safe_client
-          # ---------------------------------------------------
 
           z = Zotero2Readwise(
               readwise_token=os.environ["READWISE_TOKEN"],
@@ -59,7 +59,6 @@ jobs:
               include_annotations=True,
               include_notes=True,
           )
-
           print("Syncing…")
           z.run()
           print("✅ Done.")
