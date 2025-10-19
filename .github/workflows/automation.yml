@@ -20,35 +20,46 @@ jobs:
       - name: Install zotero2readwise
         run: pip install --upgrade zotero2readwise
 
-      - name: Run Zotero → Readwise sync
+      - name: Run Zotero → Readwise sync (forced ASCII headers)
         env:
           READWISE_TOKEN: ${{ secrets.READWISE_TOKEN }}
-          ZOTERO_KEY:     ${{ secrets.ZOTERO_KEY }}
-          ZOTERO_ID:      ${{ secrets.ZOTERO_ID }}
+          ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
+          ZOTERO_ID: ${{ secrets.ZOTERO_ID }}
         run: |
           python - <<'PY'
           import os
-          # --- Force ASCII-only User-Agent to avoid httpx UnicodeEncodeError ---
-          from pyzotero import zotero as _pz
-          from zotero2readwise import zotero as _zrw_mod
+          import httpx
           from zotero2readwise.zt2rw import Zotero2Readwise
+          from zotero2readwise import zotero as _zrw_mod
 
+          # --- Force an explicit ASCII-safe Zotero client ---
           def _safe_client(library_id, library_type, api_key):
-              # Minimal ASCII UA avoids httpx header encoding issues on GA runners
-              return _pz.Zotero(library_id, library_type, api_key, user_agent="z2rw-gh-actions")
+              headers = {
+                  "User-Agent": "z2rw-gh-actions",
+                  "Zotero-API-Version": "3",
+                  "Zotero-API-Key": api_key.encode("ascii", "ignore").decode("ascii"),
+              }
+              client = httpx.Client(
+                  base_url=f"https://api.zotero.org/{library_type}s/{library_id}",
+                  headers=headers
+              )
+              from pyzotero.zotero import Zotero
+              z = Zotero(library_id, library_type, api_key)
+              z.client = client
+              return z
 
-          # Monkey-patch the helper used by zotero2readwise
           _zrw_mod.get_zotero_client = _safe_client
-          # ---------------------------------------------------------------------
+          # ---------------------------------------------------
 
           z = Zotero2Readwise(
-              readwise_token=os.environ['READWISE_TOKEN'],
-              zotero_key=os.environ['ZOTERO_KEY'],
-              zotero_library_id=os.environ['ZOTERO_ID'],
+              readwise_token=os.environ["READWISE_TOKEN"],
+              zotero_key=os.environ["ZOTERO_KEY"],
+              zotero_library_id=os.environ["ZOTERO_ID"],
               zotero_library_type="user",
               include_annotations=True,
               include_notes=True,
           )
+
           print("Syncing…")
           z.run()
           print("✅ Done.")
