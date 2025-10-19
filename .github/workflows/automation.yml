@@ -60,6 +60,6 @@ jobs:
               include_notes=True,
           )
           print("Syncing…")
-          z.run()
+          z.run(batch_size=200)
           print("✅ Done.")
           PY
