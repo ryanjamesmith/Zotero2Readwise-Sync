@@ -1,11 +1,12 @@
 name: Zotero to Readwise Automation
 
 on:
+  workflow_dispatch:   # 👈 allows manual runs
   push:
     branches:
       - master
   schedule:
-    - cron: "0 3 * * 1" # Runs at 03:00 AM (UTC) every day (Check https://crontab.guru/)
+    - cron: "0 3 * * 1"
 
 jobs:
   zotero-to-readwise-automation:
