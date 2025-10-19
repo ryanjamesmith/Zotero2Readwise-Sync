@@ -50,7 +50,7 @@ jobs:
                   if "Citation Key:" in extra:
                       key = extra.split("Citation Key:", 1)[1].strip().splitlines()[0].strip()
                       if key:
-                          d["title"] = key
+                          d["title"] = f"@{key}"
                           changed += 1
 
               # Use library internals to format & upload
