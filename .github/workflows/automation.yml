@@ -1,85 +1,44 @@
 name: Zotero to Readwise Automation
 
 on:
-  workflow_dispatch:   # 👈 allows manual runs
-  push:
-    branches:
-      - master
+  workflow_dispatch:          # allow manual runs
   schedule:
-    - cron: "0 3 * * 1"
+    - cron: "0 11 * * *"      # 04:00 Vancouver (11:00 UTC) daily; change if you like
 
 jobs:
-  zotero-to-readwise-automation:
+  sync:
     runs-on: ubuntu-latest
     steps:
-      - name: 🍽️ Checkout the repo
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
-      - name: 🐍 Set up Python 3.9
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: '3.11'
 
-      - name: 💿 Install Zotero2Readwise Python package
-        run: pip install git+https://github.com/e-alizadeh/Zotero2Readwise.git
+      - name: Install zotero2readwise
+        run: pip install --upgrade zotero2readwise
 
-      - name: 📥 Download the Python script needed for automation
-        run:  curl https://raw.githubusercontent.com/e-alizadeh/Zotero2Readwise/master/zotero2readwise/run.py -o run.py
-      
-      - name: 🚀 Run Automation
-        run: python run.py ${{ secrets.READWISE_TOKEN }} ${{ secrets.ZOTERO_KEY }} ${{ secrets.ZOTERO_ID }}
-            - name: Add Citation-Key tags to Readwise books
-      env:
-        ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
-        ZOTERO_ID:  ${{ secrets.ZOTERO_ID }}
-        READWISE_TOKEN: ${{ secrets.READWISE_TOKEN }}
-      run: |
-        python - <<'PY'
-        import requests, time
+      - name: Run Zotero → Readwise sync
+        env:
+          READWISE_TOKEN: ${{ secrets.READWISE_TOKEN }}
+          ZOTERO_KEY:     ${{ secrets.ZOTERO_KEY }}
+          ZOTERO_ID:      ${{ secrets.ZOTERO_ID }}
+        run: |
+          python - <<'PY'
+          import os
+          from zotero2readwise.zt2rw import Zotero2Readwise
 
-        ZOTERO_ID = "${{ secrets.ZOTERO_ID }}"
-        ZOTERO_KEY = "${{ secrets.ZOTERO_KEY }}"
-        RW_TOKEN = "${{ secrets.READWISE_TOKEN }}"
-        HEADERS = {"Authorization": f"Token {RW_TOKEN}"}
-
-        # 1️⃣  Pull recent Zotero items (with citationKey)
-        z = requests.get(
-            f"https://api.zotero.org/users/{ZOTERO_ID}/items?format=json&include=data&limit=200",
-            headers={"Zotero-API-Key": ZOTERO_KEY},
-        )
-        z.raise_for_status()
-        items = z.json()
-
-        # 2️⃣  For each item, find matching Readwise "book" by title
-        def find_book(title):
-            r = requests.get("https://readwise.io/api/v2/books/?search=" + requests.utils.quote(title), headers=HEADERS)
-            if r.status_code == 200 and r.json().get("results"):
-                return r.json()["results"][0]
-            return None
-
-        # 3️⃣  Update Readwise document tags with ck:<citationKey>
-        updated = 0
-        for it in items:
-            data = it.get("data", {})
-            title = data.get("title")
-            cite = data.get("citationKey")
-            if not title or not cite:
-                continue
-            book = find_book(title)
-            if not book:
-                continue
-            tags = set(book.get("document_tags") or [])
-            tags = {t for t in tags if not t.startswith("ck:")}
-            tags.add(f"ck:{cite}")
-            r = requests.patch(
-                f"https://readwise.io/api/v2/books/{book['id']}/",
-                headers=HEADERS,
-                json={"document_tags": sorted(tags)},
-            )
-            if r.status_code == 200:
-                updated += 1
-                time.sleep(0.2)
-        print(f"✅ Added or updated citation-key tags on {updated} Readwise books.")
-        PY
+          z = Zotero2Readwise(
+              readwise_token=os.environ['READWISE_TOKEN'],
+              zotero_key=os.environ['ZOTERO_KEY'],
+              zotero_library_id=os.environ['ZOTERO_ID'],
+              zotero_library_type="user",
+              include_annotations=True,
+              include_notes=True,
+          )
+          print("Syncing…")
+          z.run()
+          print("✅ Done.")
+          PY
