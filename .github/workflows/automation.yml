@@ -22,7 +22,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install zotero2readwise
 
-      - name: Sync Zotero -> Readwise (use @citationkey as title)
+      - name: Sync Zotero -> Readwise (use @citationkey as title; handle empty JSON)
         env:
           READWISE_TOKEN: ${{ secrets.READWISE_TOKEN }}
           ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
@@ -41,16 +41,14 @@ jobs:
               include_notes=True,
           )
 
-          # Patch the method run() uses so we can rewrite titles safely across versions.
-          original_get_all = z.get_all_zotero_items
-
-          def patched_get_all():
-              items = original_get_all()
+          # --- Patch 1: rewrite titles to @citationkey inside get_all_zotero_items ---
+          _orig_get_all = z.get_all_zotero_items
+          def _patched_get_all():
+              items = _orig_get_all()
               changed = 0
               for it in items:
                   d = it.get("data", {})
                   extra = (d.get("extra") or "")
-                  # Match "Citation Key: KEY" with flexible case/spacing
                   m = re.search(r"(?i)Citation\s*Key\s*:\s*([^\s;]+)", extra)
                   if m:
                       key = m.group(1).strip()
@@ -59,10 +57,23 @@ jobs:
                           changed += 1
               print(f"Titles changed to @citationkey on {changed} items")
               return items
+          z.get_all_zotero_items = _patched_get_all
 
-          z.get_all_zotero_items = patched_get_all
+          # --- Patch 2: make create_highlights tolerant of empty JSON bodies ---
+          _orig_create = z.readwise.create_highlights
+          def _safe_create(highlights):
+              try:
+                  return _orig_create(highlights)
+              except Exception as e:
+                  # If Readwise returns 204 / empty body, resp.json() raises JSONDecodeError.
+                  # We detect that symptom and treat it as success.
+                  if "JSONDecodeError" in str(e):
+                      print("Readwise returned empty body; ignoring JSONDecodeError and continuing.")
+                      return True
+                  raise
+          z.readwise.create_highlights = _safe_create
 
-          print("Starting sync...")
+          print("Starting sync…")
           z.run()
           print("Done.")
           PY
