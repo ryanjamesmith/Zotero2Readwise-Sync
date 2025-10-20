@@ -1,3 +1,23 @@
+name: Zotero to Readwise Automation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install zotero2readwise
+        run: |
+          pip install --upgrade pip
+          pip install zotero2readwise
+
       - name: Sync Zotero → Readwise (use @citationkey as title)
         env:
           READWISE_TOKEN: ${{ secrets.READWISE_TOKEN }}
@@ -19,13 +39,11 @@
 
           print("🔧 Custom title rewrite: start")
 
-          # Build the full Zotero item list explicitly
           anns = z.retrieve_all("annotation", z.since)
           notes = z.retrieve_all("note", z.since)
           items = anns + notes
           print(f"   • Retrieved {len(items)} Zotero items")
 
-          # Replace Zotero DATA.title with @citationkey when found in the Extra field
           changed = 0
           for it in items:
               d = it.get("data", {})
@@ -38,9 +56,6 @@
                       changed += 1
 
           print(f"   • Titles changed to @citationkey on {changed} items")
-
-          # Format and upload
-          print("   • Formatting…")
           formatted = z.formatter.format_items(items)
           print("   • Uploading to Readwise…")
           z.readwise.post_zotero_annotations_to_readwise(formatted)
