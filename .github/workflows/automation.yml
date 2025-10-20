@@ -1,32 +1,11 @@
-name: Zotero to Readwise Automation
-
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: "0 11 * * *"  # 04:00 Vancouver (11:00 UTC) daily
-
-jobs:
-  sync:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install zotero2readwise
-        run: |
-          python -m pip install --upgrade pip
-          pip install zotero2readwise
-
-      - name: Sync Zotero → Readwise (use Citation Key as title)
+      - name: Sync Zotero → Readwise (use @citationkey as title)
         env:
           READWISE_TOKEN: ${{ secrets.READWISE_TOKEN }}
-          ZOTERO_KEY:     ${{ secrets.ZOTERO_KEY }}
-          ZOTERO_ID:      ${{ secrets.ZOTERO_ID }}
+          ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
+          ZOTERO_ID: ${{ secrets.ZOTERO_ID }}
         run: |
           python - <<'PY'
-          import os
+          import os, re
           from zotero2readwise.zt2rw import Zotero2Readwise
 
           z = Zotero2Readwise(
@@ -38,28 +17,33 @@ jobs:
               include_notes=True,
           )
 
-          try:
-              # Get all items (annotations + notes)
-              items = z.get_all_zotero_items()
+          print("🔧 Custom title rewrite: start")
 
-              # Replace title with Better BibTeX "Citation Key" when present in Extra
-              changed = 0
-              for it in items:
-                  d = it.get("data", {})
-                  extra = (d.get("extra") or "")
-                  if "Citation Key:" in extra:
-                      key = extra.split("Citation Key:", 1)[1].strip().splitlines()[0].strip()
-                      if key:
-                          d["title"] = f"@{key}"
-                          changed += 1
+          # Build the full Zotero item list explicitly
+          anns = z.retrieve_all("annotation", z.since)
+          notes = z.retrieve_all("note", z.since)
+          items = anns + notes
+          print(f"   • Retrieved {len(items)} Zotero items")
 
-              # Use library internals to format & upload
-              formatted = z.formatter.format_items(items)
-              z.readwise.post_zotero_annotations_to_readwise(formatted)
-              print(f"✅ Done. Titles replaced with Citation Key on {changed} items.")
-          except Exception as e:
-              print(f"⚠️ Fallback to default run due to: {e}")
-              print("Syncing…")
-              z.run()
-              print("✅ Done (default titles).")
+          # Replace Zotero DATA.title with @citationkey when found in the Extra field
+          changed = 0
+          for it in items:
+              d = it.get("data", {})
+              extra = (d.get("extra") or "")
+              m = re.search(r"(?i)Citation\s*Key\s*:\s*(\S+)", extra)
+              if m:
+                  key = m.group(1).strip()
+                  if key:
+                      d["title"] = f"@{key}"
+                      changed += 1
+
+          print(f"   • Titles changed to @citationkey on {changed} items")
+
+          # Format and upload
+          print("   • Formatting…")
+          formatted = z.formatter.format_items(items)
+          print("   • Uploading to Readwise…")
+          z.readwise.post_zotero_annotations_to_readwise(formatted)
+
+          print("✅ Done. (@citationkey titles applied where available)")
           PY
