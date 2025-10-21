@@ -1,39 +1,85 @@
-  - name: Sync Zotero -> Readwise (use @citationkey as title; native field support)
-    env:
-      READWISE_TOKEN: ${{ secrets.READWISE_TOKEN }}
-      ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
-      ZOTERO_ID: ${{ secrets.ZOTERO_ID }}
-    run: |
-      python - <<'PY'
-      import os
-      from zotero2readwise.zt2rw import Zotero2Readwise
+name: Zotero to Readwise Automation
 
-      z = Zotero2Readwise(
-          readwise_token=os.environ["READWISE_TOKEN"],
-          zotero_key=os.environ["ZOTERO_KEY"],
-          zotero_library_id=os.environ["ZOTERO_ID"],
-          zotero_library_type="user",
-          include_annotations=True,
-          include_notes=True,
-      )
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 11 * * *"  # 04:00 Vancouver (11:00 UTC)
 
-      # Override titles with @citationkey if present (native field)
-      _original_get = z.get_all_zotero_items
-      def _patched_get_all():
-          items = _original_get()
-          count = 0
-          for it in items:
-              d = it.get("data", {})
-              key = d.get("citationKey")
-              if key:
-                  d["title"] = f"@{key}"
-                  count += 1
-          print(f"Titles changed to @citationkey on {count} items")
-          return items
+jobs:
+  sync:
+    runs-on: ubuntu-latest
 
-      z.get_all_zotero_items = _patched_get_all
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      print("Starting sync with native citationKey field...")
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install zotero2readwise
+        run: |
+          python -m pip install --upgrade pip
+          pip install zotero2readwise
+
+      - name: Sync Zotero -> Readwise (use @citationkey as title; robust & tolerant)
+        env:
+          READWISE_TOKEN: ${{ secrets.READWISE_TOKEN }}
+          ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
+          ZOTERO_ID: ${{ secrets.ZOTERO_ID }}
+        run: |
+          python - <<'PY'
+          import os, re
+          from zotero2readwise.zt2rw import Zotero2Readwise
+
+          z = Zotero2Readwise(
+              readwise_token=os.environ["READWISE_TOKEN"],
+              zotero_key=os.environ["ZOTERO_KEY"],
+              zotero_library_id=os.environ["ZOTERO_ID"],
+              zotero_library_type="user",
+              include_annotations=True,
+              include_notes=True,
+          )
+
+          # ---- Patch: rewrite titles to @citationkey ----
+          orig_get = z.get_all_zotero_items
+          def patched_get():
+              items = orig_get()
+              changed = 0
+              for it in items:
+                  d = it.get("data", {})
+                  # Prefer native field if present
+                  key = d.get("citationKey")
+                  if not key:
+                      # Fallback: look in 'Extra' with flexible spacing/case
+                      extra = (d.get("extra") or "")
+                      m = re.search(r"(?i)Citation\s*(?:Key|key)\s*[:=]\s*([^\s;]+)", extra)
+                      if m:
+                          key = m.group(1).strip()
+                  if key:
+                      d["title"] = f"@{key}"
+                      changed += 1
+              print(f"Titles changed to @citationkey on {changed} items")
+              return items
+          z.get_all_zotero_items = patched_get
+
+          # ---- Patch: tolerate Readwise empty JSON (204 No Content) ----
+          orig_create = z.readwise.create_highlights
+          def safe_create(highlights):
+              try:
+                  return orig_create(highlights)
+              except Exception as e:
+                  if "JSONDecodeError" in str(e):
+                      print("Readwise returned empty body; continuing.")
+                      return True
+                  raise
+          z.readwise.create_highlights = safe_create
+
+          print("Starting sync…")
+          z.run()
+          print("Done.")
+          PY
       z.run()
       print("Done.")
       PY
