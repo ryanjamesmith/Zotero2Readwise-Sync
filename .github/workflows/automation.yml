@@ -1,39 +1,39 @@
-      - name: Sync Zotero -> Readwise (use @citationkey as title; native field support)
-        env:
-          READWISE_TOKEN: ${{ secrets.READWISE_TOKEN }}
-          ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
-          ZOTERO_ID: ${{ secrets.ZOTERO_ID }}
-        run: |
-          python - <<'PY'
-          import os
-          from zotero2readwise.zt2rw import Zotero2Readwise
+  - name: Sync Zotero -> Readwise (use @citationkey as title; native field support)
+    env:
+      READWISE_TOKEN: ${{ secrets.READWISE_TOKEN }}
+      ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
+      ZOTERO_ID: ${{ secrets.ZOTERO_ID }}
+    run: |
+      python - <<'PY'
+      import os
+      from zotero2readwise.zt2rw import Zotero2Readwise
 
-          z = Zotero2Readwise(
-              readwise_token=os.environ["READWISE_TOKEN"],
-              zotero_key=os.environ["ZOTERO_KEY"],
-              zotero_library_id=os.environ["ZOTERO_ID"],
-              zotero_library_type="user",
-              include_annotations=True,
-              include_notes=True,
-          )
+      z = Zotero2Readwise(
+          readwise_token=os.environ["READWISE_TOKEN"],
+          zotero_key=os.environ["ZOTERO_KEY"],
+          zotero_library_id=os.environ["ZOTERO_ID"],
+          zotero_library_type="user",
+          include_annotations=True,
+          include_notes=True,
+      )
 
-          # Override titles with @citationkey if present
-          _original_get = z.get_all_zotero_items
-          def _patched_get_all():
-              items = _original_get()
-              count = 0
-              for it in items:
-                  d = it.get("data", {})
-                  key = d.get("citationKey")
-                  if key:
-                      d["title"] = f"@{key}"
-                      count += 1
-              print(f"Titles changed to @citationkey on {count} items")
-              return items
+      # Override titles with @citationkey if present (native field)
+      _original_get = z.get_all_zotero_items
+      def _patched_get_all():
+          items = _original_get()
+          count = 0
+          for it in items:
+              d = it.get("data", {})
+              key = d.get("citationKey")
+              if key:
+                  d["title"] = f"@{key}"
+                  count += 1
+          print(f"Titles changed to @citationkey on {count} items")
+          return items
 
-          z.get_all_zotero_items = _patched_get_all
+      z.get_all_zotero_items = _patched_get_all
 
-          print("Starting sync with native citationKey field…")
-          z.run()
-          print("Done.")
-          PY
+      print("Starting sync with native citationKey field...")
+      z.run()
+      print("Done.")
+      PY
