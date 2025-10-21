@@ -17,14 +17,14 @@ jobs:
           pip install --upgrade pip
           pip install zotero2readwise
 
-      - name: Sync Zotero -> Readwise (force @citationkey titles)
+      - name: Sync Zotero -> Readwise (force @citationkey titles; resolve parents)
         env:
           READWISE_TOKEN: ${{ secrets.READWISE_TOKEN }}
           ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
           ZOTERO_ID: ${{ secrets.ZOTERO_ID }}
         run: |
           python - <<'PY'
-          import os, re, json
+          import os, re
           from zotero2readwise.zt2rw import Zotero2Readwise
 
           z = Zotero2Readwise(
@@ -36,55 +36,75 @@ jobs:
               include_notes=True,
           )
 
-          # --------- build parentKey -> citationKey map (robust regex) ---------
-          rx = re.compile(r"(?im)^citation\s*key\s*[:=]\s*([A-Za-z0-9._:+\-]+)", re.MULTILINE)
           raw = z.get_all_zotero_items()
-          parent_keys = {it["data"].get("parentItem") for it in raw if it.get("data", {}).get("parentItem")}
-          parent_keys.discard(None)
 
-          parent2ck = {}
-          if parent_keys:
-              keys = list(parent_keys)
+          annot_attach_keys = set()
+          note_parent_keys = set()
+          for it in raw:
+              d = it.get("data", {})
+              t = d.get("itemType")
+              if t == "annotation" and d.get("parentItem"):
+                  annot_attach_keys.add(d["parentItem"])
+              elif t == "note" and d.get("parentItem"):
+                  note_parent_keys.add(d["parentItem"])
+
+          def fetch_items(keys):
+              keys = list(keys)
               for i in range(0, len(keys), 50):
                   batch = keys[i:i+50]
-                  parents = z.zotero_client.items(itemKey=",".join(batch))
-                  for p in parents:
-                      pd = p.get("data", {})
-                      ck = pd.get("citationKey")
-                      if not ck:
-                          extra = (pd.get("extra") or "")
-                          m = rx.search(extra)
-                          if m:
-                              ck = m.group(1).strip()
-                      if ck:
-                          parent2ck[pd.get("key")] = ck
+                  for itm in z.zotero_client.items(itemKey=",".join(batch)):
+                      yield itm
 
-          print(f"Collected {len(parent2ck)} parent items with citation keys")
+          attach_to_top = {}
+          if annot_attach_keys:
+              for att in fetch_items(annot_attach_keys):
+                  ad = att.get("data", {})
+                  if ad.get("itemType") == "attachment" and ad.get("parentItem"):
+                      attach_to_top[ad["key"]] = ad["parentItem"]
 
-          # ---- rewrite outgoing titles ----
+          top_level_keys = set(note_parent_keys)
+          top_level_keys.update(attach_to_top.values())
+
+          rx = re.compile(r"(?im)^citation\s*key\s*[:=]\s*([A-Za-z0-9._:+\-]+)")
+          top_to_ck = {}
+          if top_level_keys:
+              for top in fetch_items(top_level_keys):
+                  td = top.get("data", {})
+                  ck = td.get("citationKey")
+                  if not ck:
+                      extra = td.get("extra") or ""
+                      m = rx.search(extra)
+                      if m:
+                          ck = m.group(1).strip()
+                  if ck:
+                      top_to_ck[td.get("key")] = ck
+
+          print(f"Resolved {len(annot_attach_keys)} attachments to {len(top_level_keys)} top-level items")
+          print(f"Collected {len(top_to_ck)} citation keys from top-level items")
+
           orig_create = z.readwise.create_highlights
+
+          def extract_item_key_from_link(link: str):
+              if "zotero://select/items/" not in link:
+                  return None
+              tail = link.rsplit("/", 1)[-1]
+              return tail.split("_")[-1]
+
           def safe_create(highlights):
               changed = 0
               for h in highlights:
-                  src = h.get("source_url") or ""
-                  parent_key = None
-                  if "zotero://select/items/" in src:
-                      if "_" in src:
-                          parent_key = src.split("_")[-1]
-                      else:
-                          parent_key = src.rsplit("/", 1)[-1]
-                  ck = parent2ck.get(parent_key)
+                  link = h.get("source_url") or ""
+                  key = extract_item_key_from_link(link)
+                  if not key:
+                      continue
+                  top = attach_to_top.get(key, key)
+                  ck = top_to_ck.get(top)
                   if ck:
                       h["title"] = f"@{ck}"
                       changed += 1
               print(f"Rewrote {changed} Readwise titles to @citationkey")
-              try:
-                  return orig_create(highlights)
-              except Exception as e:
-                  if e.__class__.__name__ in ("JSONDecodeError", "RequestsJSONDecodeError"):
-                      print("Readwise returned empty JSON; continuing.")
-                      return True
-                  raise
+              return orig_create(highlights)
+
           z.readwise.create_highlights = safe_create
 
           print("Starting sync…")
