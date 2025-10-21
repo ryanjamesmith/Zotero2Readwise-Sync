@@ -80,6 +80,3 @@ jobs:
           z.run()
           print("Done.")
           PY
-      z.run()
-      print("Done.")
-      PY
