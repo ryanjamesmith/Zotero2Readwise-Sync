@@ -1,74 +1,74 @@
-      - name: Sync Zotero -> Readwise (force @citationkey titles)
-        env:
-          READWISE_TOKEN: ${{ secrets.READWISE_TOKEN }}
-          ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
-          ZOTERO_ID: ${{ secrets.ZOTERO_ID }}
-        run: |
-          python - <<'PY'
-          import os, re, json
-          from zotero2readwise.zt2rw import Zotero2Readwise
+- name: Sync Zotero -> Readwise (force @citationkey titles)
+  env:
+    READWISE_TOKEN: ${{ secrets.READWISE_TOKEN }}
+    ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
+    ZOTERO_ID: ${{ secrets.ZOTERO_ID }}
+  run: |
+    python - <<'PY'
+    import os, re, json
+    from zotero2readwise.zt2rw import Zotero2Readwise
 
-          z = Zotero2Readwise(
-              readwise_token=os.environ["READWISE_TOKEN"],
-              zotero_key=os.environ["ZOTERO_KEY"],
-              zotero_library_id=os.environ["ZOTERO_ID"],
-              zotero_library_type="user",
-              include_annotations=True,
-              include_notes=True,
-          )
+    z = Zotero2Readwise(
+        readwise_token=os.environ["READWISE_TOKEN"],
+        zotero_key=os.environ["ZOTERO_KEY"],
+        zotero_library_id=os.environ["ZOTERO_ID"],
+        zotero_library_type="user",
+        include_annotations=True,
+        include_notes=True,
+    )
 
-          # --------- build parentKey -> citationKey map (robust regex) ---------
-          rx = re.compile(r"(?im)^citation\s*key\s*[:=]\s*([A-Za-z0-9._:+\-]+)", re.MULTILINE)
-          raw = z.get_all_zotero_items()
-          parent_keys = {it["data"].get("parentItem") for it in raw if it.get("data", {}).get("parentItem")}
-          parent_keys.discard(None)
+    # --------- build parentKey -> citationKey map (robust regex) ---------
+    rx = re.compile(r"(?im)^citation\s*key\s*[:=]\s*([A-Za-z0-9._:+\-]+)", re.MULTILINE)
+    raw = z.get_all_zotero_items()
+    parent_keys = {it["data"].get("parentItem") for it in raw if it.get("data", {}).get("parentItem")}
+    parent_keys.discard(None)
 
-          parent2ck = {}
-          if parent_keys:
-              keys = list(parent_keys)
-              for i in range(0, len(keys), 50):
-                  batch = keys[i:i+50]
-                  parents = z.zotero_client.items(itemKey=",".join(batch))
-                  for p in parents:
-                      pd = p.get("data", {})
-                      ck = pd.get("citationKey")
-                      if not ck:
-                          extra = (pd.get("extra") or "")
-                          m = rx.search(extra)
-                          if m:
-                              ck = m.group(1).strip()
-                      if ck:
-                          parent2ck[pd.get("key")] = ck
+    parent2ck = {}
+    if parent_keys:
+        keys = list(parent_keys)
+        for i in range(0, len(keys), 50):
+            batch = keys[i:i+50]
+            parents = z.zotero_client.items(itemKey=",".join(batch))
+            for p in parents:
+                pd = p.get("data", {})
+                ck = pd.get("citationKey")
+                if not ck:
+                    extra = (pd.get("extra") or "")
+                    m = rx.search(extra)
+                    if m:
+                        ck = m.group(1).strip()
+                if ck:
+                    parent2ck[pd.get("key")] = ck
 
-          print(f"Collected {len(parent2ck)} parent items with citation keys")
+    print(f"Collected {len(parent2ck)} parent items with citation keys")
 
-          # ---- rewrite outgoing titles ----
-          orig_create = z.readwise.create_highlights
-          def safe_create(highlights):
-              changed = 0
-              for h in highlights:
-                  src = h.get("source_url") or ""
-                  parent_key = None
-                  if "zotero://select/items/" in src:
-                      if "_" in src:
-                          parent_key = src.split("_")[-1]
-                      else:
-                          parent_key = src.rsplit("/", 1)[-1]
-                  ck = parent2ck.get(parent_key)
-                  if ck:
-                      h["title"] = f"@{ck}"
-                      changed += 1
-              print(f"Rewrote {changed} Readwise titles to @citationkey")
-              try:
-                  return orig_create(highlights)
-              except Exception as e:
-                  if e.__class__.__name__ in ("JSONDecodeError", "RequestsJSONDecodeError"):
-                      print("Readwise returned empty JSON; continuing.")
-                      return True
-                  raise
-          z.readwise.create_highlights = safe_create
+    # ---- rewrite outgoing titles ----
+    orig_create = z.readwise.create_highlights
+    def safe_create(highlights):
+        changed = 0
+        for h in highlights:
+            src = h.get("source_url") or ""
+            parent_key = None
+            if "zotero://select/items/" in src:
+                if "_" in src:
+                    parent_key = src.split("_")[-1]
+                else:
+                    parent_key = src.rsplit("/", 1)[-1]
+            ck = parent2ck.get(parent_key)
+            if ck:
+                h["title"] = f"@{ck}"
+                changed += 1
+        print(f"Rewrote {changed} Readwise titles to @citationkey")
+        try:
+            return orig_create(highlights)
+        except Exception as e:
+            if e.__class__.__name__ in ("JSONDecodeError", "RequestsJSONDecodeError"):
+                print("Readwise returned empty JSON; continuing.")
+                return True
+            raise
+    z.readwise.create_highlights = safe_create
 
-          print("Starting sync…")
-          z.run()
-          print("Done.")
-          PY
+    print("Starting sync…")
+    z.run()
+    print("Done.")
+    PY
