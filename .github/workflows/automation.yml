@@ -23,14 +23,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install zotero2readwise
 
-      - name: Sync Zotero -> Readwise (use @citationkey as title; robust & tolerant)
+      - name: Sync Zotero -> Readwise (force @citationkey titles)
         env:
           READWISE_TOKEN: ${{ secrets.READWISE_TOKEN }}
           ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
           ZOTERO_ID: ${{ secrets.ZOTERO_ID }}
         run: |
           python - <<'PY'
-          import os, re
+          import os, re, math
           from zotero2readwise.zt2rw import Zotero2Readwise
 
           z = Zotero2Readwise(
@@ -42,41 +42,71 @@ jobs:
               include_notes=True,
           )
 
-          # ---- Patch: rewrite titles to @citationkey ----
-          orig_get = z.get_all_zotero_items
-          def patched_get():
-              items = orig_get()
-              changed = 0
-              for it in items:
-                  d = it.get("data", {})
-                  # Prefer native field if present
-                  key = d.get("citationKey")
-                  if not key:
-                      # Fallback: look in 'Extra' with flexible spacing/case
-                      extra = (d.get("extra") or "")
-                      m = re.search(r"(?i)Citation\s*(?:Key|key)\s*[:=]\s*([^\s;]+)", extra)
-                      if m:
-                          key = m.group(1).strip()
-                  if key:
-                      d["title"] = f"@{key}"
-                      changed += 1
-              print(f"Titles changed to @citationkey on {changed} items")
-              return items
-          z.get_all_zotero_items = patched_get
+          # ---------- 1) Build parent -> citationKey map ----------
+          parent_keys = set()
+          raw_items = z.get_all_zotero_items()  # annotations + notes
+          for it in raw_items:
+              d = it.get("data", {})
+              p = d.get("parentItem")
+              if p:
+                  parent_keys.add(p)
 
-          # ---- Patch: tolerate Readwise empty JSON (204 No Content) ----
+          parent2key = {}
+          if parent_keys:
+              # Zotero API allows batched retrieval of item keys
+              keys = list(parent_keys)
+              step = 50
+              rx = re.compile(r"(?i)Citation\s*(?:Key|key)\s*[:=]\s*([^\s;]+)")
+              for i in range(0, len(keys), step):
+                  batch = keys[i:i+step]
+                  parents = z.zotero_client.items(itemKey=",".join(batch))
+                  for p in parents:
+                      pd = p.get("data", {})
+                      title = (pd.get("title") or "").strip()
+                      key = pd.get("citationKey")
+                      if not key:
+                          extra = (pd.get("extra") or "")
+                          m = rx.search(extra)
+                          if m:
+                              key = m.group(1).strip()
+                      if title and key:
+                          parent2key[title] = key
+
+          print(f"Collected {len(parent2key)} parent titles with citation keys")
+
+          # ---------- 2) Wrap create_highlights to rewrite titles ----------
           orig_create = z.readwise.create_highlights
+
           def safe_create(highlights):
+              # Replace each Readwise doc title with @citationkey if we have it
+              changed = 0
+              for h in highlights:
+                  t = h.get("title")
+                  if t:
+                      key = parent2key.get(t)
+                      if key:
+                          h["title"] = f"@{key}"
+                          changed += 1
+              print(f"Rewrote {changed} Readwise titles to @citationkey")
+
               try:
                   return orig_create(highlights)
               except Exception as e:
+                  # Readwise sometimes returns 204/empty body => JSONDecodeError downstream
                   if "JSONDecodeError" in str(e):
                       print("Readwise returned empty body; continuing.")
                       return True
                   raise
+
           z.readwise.create_highlights = safe_create
 
+          # Run the normal pipeline (format + post)
           print("Starting sync…")
+          # We already fetched raw_items once; z.run() will fetch again internally.
+          # That is okay—safer than patching run() internals.
+          z.run()
+          print("Done.")
+          PY
           z.run()
           print("Done.")
           PY
