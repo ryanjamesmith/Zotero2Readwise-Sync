@@ -1,35 +1,11 @@
-name: Zotero to Readwise Automation
-
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: "0 11 * * *"  # 04:00 Vancouver (11:00 UTC)
-
-jobs:
-  sync:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install zotero2readwise
-        run: |
-          python -m pip install --upgrade pip
-          pip install zotero2readwise
-
-      - name: Sync Zotero -> Readwise (use @citationkey as title; handle empty JSON)
+      - name: Sync Zotero -> Readwise (use @citationkey as title; native field support)
         env:
           READWISE_TOKEN: ${{ secrets.READWISE_TOKEN }}
-          ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
-          ZOTERO_ID: ${{ secrets.ZOTERO_ID }}
+          ZOTERO_KEY:     ${{ secrets.ZOTERO_KEY }}
+          ZOTERO_ID:      ${{ secrets.ZOTERO_ID }}
         run: |
           python - <<'PY'
-          import os, re
+          import os
           from zotero2readwise.zt2rw import Zotero2Readwise
 
           z = Zotero2Readwise(
@@ -41,39 +17,23 @@ jobs:
               include_notes=True,
           )
 
-          # --- Patch 1: rewrite titles to @citationkey inside get_all_zotero_items ---
-          _orig_get_all = z.get_all_zotero_items
+          # Patch to override titles with @citationkey if present
+          _original_get = z.get_all_zotero_items
           def _patched_get_all():
-              items = _orig_get_all()
-              changed = 0
+              items = _original_get()
+              count = 0
               for it in items:
                   d = it.get("data", {})
-                  extra = (d.get("extra") or "")
-                  m = re.search(r"(?i)Citation\s*Key\s*:\s*([^\s;]+)", extra)
-                  if m:
-                      key = m.group(1).strip()
-                      if key:
-                          d["title"] = f"@{key}"
-                          changed += 1
-              print(f"Titles changed to @citationkey on {changed} items")
+                  key = d.get("citationKey")
+                  if key:
+                      d["title"] = f"@{key}"
+                      count += 1
+              print(f"Titles changed to @citationkey on {count} items")
               return items
+
           z.get_all_zotero_items = _patched_get_all
 
-          # --- Patch 2: make create_highlights tolerant of empty JSON bodies ---
-          _orig_create = z.readwise.create_highlights
-          def _safe_create(highlights):
-              try:
-                  return _orig_create(highlights)
-              except Exception as e:
-                  # If Readwise returns 204 / empty body, resp.json() raises JSONDecodeError.
-                  # We detect that symptom and treat it as success.
-                  if "JSONDecodeError" in str(e):
-                      print("Readwise returned empty body; ignoring JSONDecodeError and continuing.")
-                      return True
-                  raise
-          z.readwise.create_highlights = _safe_create
-
-          print("Starting sync…")
+          print("Starting sync with native citationKey field…")
           z.run()
           print("Done.")
           PY
