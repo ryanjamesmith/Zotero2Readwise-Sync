@@ -22,16 +22,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install zotero2readwise
 
-      - name: Sync Zotero -> Readwise (force @citationkey titles; resolve parents + title fallback)
+            - name: Sync Zotero -> Readwise (force @citationkey titles; resolve parents + title fallback; tolerant POST)
         env:
           READWISE_TOKEN: ${{ secrets.READWISE_TOKEN }}
           ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
           ZOTERO_ID: ${{ secrets.ZOTERO_ID }}
         run: |
           python - <<'PY'
-          import os, re
+          import os, re, time, requests
           from zotero2readwise.zt2rw import Zotero2Readwise
 
+          # ---------- init ----------
           z = Zotero2Readwise(
               readwise_token=os.environ["READWISE_TOKEN"],
               zotero_key=os.environ["ZOTERO_KEY"],
@@ -41,6 +42,7 @@ jobs:
               include_notes=True,
           )
 
+          # ---------- collect items ----------
           raw = z.get_all_zotero_items()
           annot_attach_keys, note_parent_keys = set(), set()
           for it in raw:
@@ -58,6 +60,7 @@ jobs:
                   for itm in z.zotero_client.items(itemKey=",".join(batch)):
                       yield itm
 
+          # attachment -> top-level parent
           attach_to_top = {}
           if annot_attach_keys:
               for att in fetch_items(annot_attach_keys):
@@ -65,8 +68,10 @@ jobs:
                   if ad.get("itemType") == "attachment" and ad.get("parentItem"):
                       attach_to_top[ad["key"]] = ad["parentItem"]
 
+          # top-level set
           top_level_keys = set(note_parent_keys) | set(attach_to_top.values())
 
+          # top-level key -> citation key
           rx = re.compile(r"(?im)^citation\s*key\s*[:=]\s*([A-Za-z0-9._:+\-]+)")
           top_to_ck, top_to_title = {}, {}
           if top_level_keys:
@@ -87,6 +92,7 @@ jobs:
           print(f"Resolved {len(annot_attach_keys)} attachments to {len(top_level_keys)} top-level items")
           print(f"Collected {len(top_to_ck)} citation keys from top-level items")
 
+          # title fallback map
           def norm_title(s: str) -> str:
               return " ".join((s or "").strip().lower().split())
           title_to_ck = {}
@@ -95,6 +101,31 @@ jobs:
               if t and t not in title_to_ck:
                   title_to_ck[t] = ck
 
+          # ---------- POST to Readwise without resp.json() ----------
+          RW_URL = "https://readwise.io/api/v2/highlights/"
+          RW_HEADERS = {"Authorization": f"Token {os.environ['READWISE_TOKEN']}"}
+
+          def post_highlights_safely(highlights, batch_size=100):
+              # chunk & tolerant HTTP handling
+              for i in range(0, len(highlights), batch_size):
+                  chunk = highlights[i:i+batch_size]
+                  for attempt in range(4):
+                      resp = requests.post(RW_URL, json={"highlights": chunk},
+                                           headers=RW_HEADERS, timeout=60)
+                      if resp.status_code in (200, 201, 202, 204):
+                          # success (even if body is empty)
+                          break
+                      if resp.status_code == 429:
+                          # brief backoff
+                          wait = 2 * (attempt + 1)
+                          print(f"Readwise 429, retrying in {wait}s…")
+                          time.sleep(wait)
+                          continue
+                      # other errors: log body and raise
+                      print(f"Readwise error {resp.status_code}: {resp.text[:400]}")
+                      resp.raise_for_status()
+
+          # rewrite titles before sending, then call our safe poster
           orig_create = z.readwise.create_highlights
           LINK_FIELDS = ("source_url", "highlight_url", "location_url", "url")
 
@@ -108,6 +139,7 @@ jobs:
               changed_link = 0
               changed_title = 0
               for h in highlights:
+                  # link-based mapping
                   key = None
                   for fld in LINK_FIELDS:
                       link = h.get(fld) or ""
@@ -121,15 +153,20 @@ jobs:
                           h["title"] = f"@{ck}"
                           changed_link += 1
                           continue
+                  # title-based fallback
                   tnorm = norm_title(h.get("title", ""))
                   ck = title_to_ck.get(tnorm)
                   if ck:
                       h["title"] = f"@{ck}"
                       changed_title += 1
+
               print(f"Rewrote {changed_link} via links, {changed_title} via title fallback")
-              return orig_create(highlights)
+              # Use our tolerant POST instead of library's resp.json()-based method
+              post_highlights_safely(highlights, batch_size=100)
+              return True
 
           z.readwise.create_highlights = safe_create
+
           print("Starting sync…")
           z.run()
           print("✅ Done.")
