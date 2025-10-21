@@ -17,7 +17,7 @@
               include_notes=True,
           )
 
-          # Override titles with @citationkey if present (native field)
+          # Override titles with @citationkey if present
           _original_get = z.get_all_zotero_items
           def _patched_get_all():
               items = _original_get()
@@ -33,7 +33,7 @@
 
           z.get_all_zotero_items = _patched_get_all
 
-          print("Starting sync with native citationKey field...")
+          print("Starting sync with native citationKey field…")
           z.run()
           print("Done.")
           PY
